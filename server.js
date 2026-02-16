@@ -103,7 +103,40 @@ app.post('/v1/chat/completions', async (req, res) => {
         processedMessages = [
           {
             role: 'system',
-            content: 'You are a creative, engaging conversational AI. Write naturally with proper paragraph structure - separate different thoughts, scenes, or topics into distinct paragraphs using line breaks. Use varied, complete sentences that flow together smoothly. Avoid choppy, fragmented writing like "He did this. Did that. Then this." Instead, write in a natural narrative style with proper paragraph breaks between ideas.'
+            content: `You are an expert creative writer specializing in immersive, natural roleplay and narrative storytelling. Follow these guidelines strictly:
+
+WRITING STYLE:
+- Write in flowing, descriptive prose with varied sentence structures
+- Combine related actions and thoughts into complex, natural sentences
+- NEVER use choppy fragments like "He did this. Did that. Then this."
+- Instead write: "He took a deep breath before opening his eyes, his thoughts fuzzy and scattered."
+
+PARAGRAPH STRUCTURE:
+- Separate distinct moments, scenes, or shifts in focus into paragraphs
+- Each paragraph should contain 4-6 complete sentences that flow together
+- Use proper line breaks (double newlines) between paragraphs
+- Never create walls of text - always break into digestible paragraphs
+
+FORMATTING:
+- Use proper markdown: *italics* NOT * italics * (no spaces inside asterisks)
+- Italicize internal thoughts, emphasis, and foreign words correctly
+- Maintain consistent formatting throughout the response
+- Ensure all opening markdown tags are properly closed
+
+DESCRIPTION & DEPTH:
+- Layer physical actions with internal thoughts and emotional reactions
+- Use sensory details and atmospheric description naturally within the narrative
+- Build tension and pacing through sentence rhythm and structure
+- Show character depth through reaction, not just action
+
+AVOID:
+- Staccato, telegram-style sentences
+- Repetitive sentence patterns
+- Inconsistent or broken markdown formatting
+- Single-sentence paragraphs (unless for dramatic effect)
+- Walls of text without paragraph breaks
+
+Write as if you are crafting a published novel - polished, immersive, and engaging.`
           },
           ...messages
         ];
@@ -113,7 +146,8 @@ app.post('/v1/chat/completions', async (req, res) => {
     const nimRequest = {
       model: nimModel,
       messages: processedMessages,
-      temperature: temperature || 0.7,
+      temperature: temperature || 0.8,
+      top_p: 0.95,
       max_tokens: max_tokens || 4096,
       stream: stream || false
     };
@@ -249,20 +283,26 @@ app.post('/v1/chat/completions', async (req, res) => {
             fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
           }
           
-          // Force paragraph breaks for GLM-5
+          // Advanced paragraph formatting for GLM-5
           let formattedContent = fullContent;
           if (nimModel === 'z-ai/glm5') {
-            // Split into sentences
-            const sentences = fullContent.match(/[^.!?]+[.!?]+/g) || [fullContent];
+            // First, fix broken markdown formatting (spaces inside asterisks)
+            formattedContent = formattedContent.replace(/\*\s+/g, '*').replace(/\s+\*/g, '*');
             
-            // Group into paragraphs of 6-7 sentences
+            // Split text into sentences (improved regex for dialogue and complex punctuation)
+            const sentences = formattedContent.match(/[^.!?]+[.!?]+["']?(?=\s+[A-Z]|$)/g) || [formattedContent];
+            
+            // Group sentences into paragraphs of 4-6 sentences
             const paragraphs = [];
-            for (let i = 0; i < sentences.length; i += 6) {
-              const paragraph = sentences.slice(i, i + 6).join(' ').trim();
-              paragraphs.push(paragraph);
+            for (let i = 0; i < sentences.length; i += 5) {
+              const paragraph = sentences.slice(i, i + 5).join(' ').trim();
+              if (paragraph.length > 0) {
+                paragraphs.push(paragraph);
+              }
             }
             
-            formattedContent = paragraphs.join('\n\n');
+            // Join with double newlines and clean up excessive spacing
+            formattedContent = paragraphs.join('\n\n').replace(/\n{3,}/g, '\n\n');
           }
           
           return {
