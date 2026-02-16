@@ -196,15 +196,25 @@ app.post('/v1/chat/completions', async (req, res) => {
                   // Track sentence count in streaming
                   if (!res.locals) res.locals = {};
                   if (!res.locals.sentenceCount) res.locals.sentenceCount = 0;
+                  if (!res.locals.fullText) res.locals.fullText = '';
                   
-                  // Count sentences in this chunk
-                  const sentenceEndings = (finalContent.match(/[.!?]/g) || []).length;
-                  res.locals.sentenceCount += sentenceEndings;
+                  // Accumulate the full text
+                  res.locals.fullText += finalContent;
                   
-                  // Add paragraph break every 6 sentences
-                  if (sentenceEndings > 0 && res.locals.sentenceCount % 6 === 0) {
-                    finalContent = finalContent + '\n\n';
+                  // Only check for paragraph breaks at proper sentence boundaries
+                  // Look for: period/question/exclamation followed by closing quote and space, or just followed by space and capital letter
+                  const properSentences = res.locals.fullText.match(/[.!?](?:\s*["']?\s+[A-Z]|$)/g) || [];
+                  const newSentenceCount = properSentences.length;
+                  
+                  // If we've crossed a 6-sentence threshold, add paragraph break
+                  if (newSentenceCount > res.locals.sentenceCount && newSentenceCount % 6 === 0) {
+                    // Only add break if this chunk ends with a proper sentence ending
+                    if (/[.!?]\s*["']?\s*$/.test(finalContent)) {
+                      finalContent = finalContent + '\n\n';
+                    }
                   }
+                  
+                  res.locals.sentenceCount = newSentenceCount;
                 }
                 
                 if (finalContent) {
