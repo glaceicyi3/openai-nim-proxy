@@ -15,7 +15,7 @@ const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.c
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
-const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
+const SHOW_REASONING = true; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
@@ -92,9 +92,27 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     
     // Transform OpenAI request to NIM format
+    let processedMessages = messages;
+    
+    // Add natural writing instruction for GLM-5
+    if (nimModel === 'z-ai/glm5') {
+      // Check if there's already a system message
+      const hasSystemMessage = messages.some(msg => msg.role === 'system');
+      
+      if (!hasSystemMessage) {
+        processedMessages = [
+          {
+            role: 'system',
+            content: 'Write in a natural, flowing style with proper paragraphs. Use complete sentences and varied sentence structure. Avoid choppy, fragmented writing.'
+          },
+          ...messages
+        ];
+      }
+    }
+    
     const nimRequest = {
       model: nimModel,
-      messages: messages,
+      messages: processedMessages,
       temperature: temperature || 0.6,
       max_tokens: max_tokens || 9024,
       stream: stream || false
