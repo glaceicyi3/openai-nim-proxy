@@ -222,11 +222,27 @@ app.post('/v1/chat/completions', async (req, res) => {
             fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
           }
           
+          // Force paragraph breaks for GLM-5
+          let formattedContent = fullContent;
+          if (nimModel === 'z-ai/glm5') {
+            // Split into sentences
+            const sentences = fullContent.match(/[^.!?]+[.!?]+/g) || [fullContent];
+            
+            // Group into paragraphs of 6-7 sentences
+            const paragraphs = [];
+            for (let i = 0; i < sentences.length; i += 6) {
+              const paragraph = sentences.slice(i, i + 6).join(' ').trim();
+              paragraphs.push(paragraph);
+            }
+            
+            formattedContent = paragraphs.join('\n\n');
+          }
+          
           return {
             index: choice.index,
             message: {
               role: choice.message.role,
-              content: fullContent.replace(/\n/g, '\n\n') // Force paragraph breaks
+              content: formattedContent
             },
             finish_reason: choice.finish_reason
           };
