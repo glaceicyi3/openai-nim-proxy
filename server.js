@@ -15,7 +15,7 @@ const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.c
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
-const SHOW_REASONING = true; // Set to true to show reasoning with <think> tags
+const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
@@ -103,7 +103,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         processedMessages = [
           {
             role: 'system',
-            content: 'Write in a natural, flowing style with proper paragraphs. Use complete sentences and varied sentence structure. Avoid choppy, fragmented writing.'
+            content: 'You are a creative, engaging conversational AI. Write naturally with proper paragraph structure - separate different thoughts, scenes, or topics into distinct paragraphs using line breaks. Use varied, complete sentences that flow together smoothly. Avoid choppy, fragmented writing like "He did this. Did that. Then this." Instead, write in a natural narrative style with proper paragraph breaks between ideas.'
           },
           ...messages
         ];
@@ -113,8 +113,8 @@ app.post('/v1/chat/completions', async (req, res) => {
     const nimRequest = {
       model: nimModel,
       messages: processedMessages,
-      temperature: temperature || 0.6,
-      max_tokens: max_tokens || 9024,
+      temperature: temperature || 0.7,
+      max_tokens: max_tokens || 4096,
       stream: stream || false
     };
     
@@ -226,7 +226,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             index: choice.index,
             message: {
               role: choice.message.role,
-              content: fullContent
+              content: fullContent.replace(/\n/g, '\n\n') // Force paragraph breaks
             },
             finish_reason: choice.finish_reason
           };
