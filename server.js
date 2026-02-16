@@ -206,8 +206,8 @@ app.post('/v1/chat/completions', async (req, res) => {
                   const properSentences = res.locals.fullText.match(/[.!?](?:\s*["']?\s+[A-Z]|$)/g) || [];
                   const newSentenceCount = properSentences.length;
                   
-                  // If we've crossed a 6-sentence threshold, add paragraph break
-                  if (newSentenceCount > res.locals.sentenceCount && newSentenceCount % 6 === 0) {
+                  // If we've crossed a 4-sentence threshold, add paragraph break
+                  if (newSentenceCount > res.locals.sentenceCount && newSentenceCount % 4 === 0) {
                     // Only add break if this chunk ends with a proper sentence ending
                     if (/[.!?]\s*["']?\s*$/.test(finalContent)) {
                       finalContent = finalContent + '\n\n';
