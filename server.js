@@ -165,6 +165,9 @@ app.post('/v1/chat/completions', async (req, res) => {
                 const reasoning = data.choices[0].delta.reasoning_content;
                 const content = data.choices[0].delta.content;
                 
+                // For GLM-5 streaming, inject paragraph breaks
+                let finalContent = '';
+                
                 if (SHOW_REASONING) {
                   let combinedContent = '';
                   
@@ -182,16 +185,30 @@ app.post('/v1/chat/completions', async (req, res) => {
                     combinedContent += content;
                   }
                   
-                  if (combinedContent) {
-                    data.choices[0].delta.content = combinedContent;
-                    delete data.choices[0].delta.reasoning_content;
-                  }
+                  finalContent = combinedContent;
                 } else {
-                  if (content) {
-                    data.choices[0].delta.content = content;
-                  } else {
-                    data.choices[0].delta.content = '';
+                  finalContent = content || '';
+                  // Don't include reasoning in output
+                }
+                
+                // For GLM-5, add extra line breaks after sentence-ending punctuation
+                if (nimModel === 'z-ai/glm5' && finalContent) {
+                  // Track sentence count in streaming
+                  if (!res.locals) res.locals = {};
+                  if (!res.locals.sentenceCount) res.locals.sentenceCount = 0;
+                  
+                  // Count sentences in this chunk
+                  const sentenceEndings = (finalContent.match(/[.!?]/g) || []).length;
+                  res.locals.sentenceCount += sentenceEndings;
+                  
+                  // Add paragraph break every 6 sentences
+                  if (sentenceEndings > 0 && res.locals.sentenceCount % 6 === 0) {
+                    finalContent = finalContent + '\n\n';
                   }
+                }
+                
+                if (finalContent) {
+                  data.choices[0].delta.content = finalContent;
                   delete data.choices[0].delta.reasoning_content;
                 }
               }
