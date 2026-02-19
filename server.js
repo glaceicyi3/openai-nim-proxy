@@ -8,8 +8,8 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ limit: '100mb', extended: true }));
+app.use(express.json({ limit: '50mb' })); // Increased payload limit
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // NVIDIA NIM API configuration
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
@@ -149,7 +149,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       messages: processedMessages,
       temperature: temperature || 0.8,
       top_p: 0.95,
-      max_tokens: max_tokens || 4096,
+      max_tokens: max_tokens || 2048,
       stream: stream || false
     };
     
@@ -159,9 +159,13 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         enable_thinking: true,
         clear_thinking: false
       };
+      console.log(`[GLM-5] Request to z-ai/glm5 with thinking enabled`);
     } else if (ENABLE_THINKING_MODE) {
       nimRequest.extra_body = { chat_template_kwargs: { thinking: true } };
     }
+    
+    // Log which model is being used
+    console.log(`[REQUEST] Using NVIDIA model: ${nimModel}`);
     
     // Make request to NVIDIA NIM API
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
