@@ -95,8 +95,8 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Transform OpenAI request to NIM format
     let processedMessages = messages;
     
-    // Add natural writing instruction for GLM-5
-    if (nimModel === 'z-ai/glm5') {
+    // Add natural writing instruction for GLM models
+    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
       // Check if there's already a system message
       const hasSystemMessage = messages.some(msg => msg.role === 'system');
       
@@ -105,6 +105,13 @@ app.post('/v1/chat/completions', async (req, res) => {
           {
             role: 'system',
             content: `You are an expert creative writer specializing in immersive, natural roleplay and narrative storytelling. Follow these guidelines strictly:
+
+THINKING PROCESS (Internal - not shown to user):
+- Think in natural, flowing narrative style
+- Analyze character motivations, subtext, and emotional dynamics naturally
+- Consider: "This moment reveals X about the character... The tension here stems from Y..."
+- DO NOT use structured formats like "Let's analyze:", "User's response:", "Example dialogues:"
+- Think like you're crafting a story, not filling out a template
 
 WRITING STYLE:
 - Write in flowing, descriptive prose with varied sentence structures
@@ -136,6 +143,7 @@ AVOID:
 - Inconsistent or broken markdown formatting
 - Single-sentence paragraphs (unless for dramatic effect)
 - Walls of text without paragraph breaks
+- Structured, bullet-point thinking (analyze the scene naturally)
 
 Write as if you are crafting a published novel - polished, immersive, and engaging.`
           },
@@ -149,17 +157,17 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       messages: processedMessages,
       temperature: temperature || 0.8,
       top_p: 0.95,
-      max_tokens: max_tokens || 2048,
+      max_tokens: max_tokens || 3072,
       stream: stream || false
     };
     
-    // Add thinking parameters for GLM-5
-    if (nimModel === 'z-ai/glm5') {
+    // Add thinking parameters for GLM models
+    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
       nimRequest.chat_template_kwargs = {
         enable_thinking: true,
         clear_thinking: false
       };
-      console.log(`[GLM-5] Request to z-ai/glm5 with thinking enabled`);
+      console.log(`[GLM] Request to ${nimModel} with thinking enabled`);
     } else if (ENABLE_THINKING_MODE) {
       nimRequest.extra_body = { chat_template_kwargs: { thinking: true } };
     }
