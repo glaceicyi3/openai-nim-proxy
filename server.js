@@ -162,7 +162,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     };
     
     // Add thinking parameters for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1' || nimModel === 'z-ai/glm-5_1' || nimModel.includes('glm4.7')) {
       nimRequest.chat_template_kwargs = {
         enable_thinking: true,
         clear_thinking: false
@@ -175,15 +175,57 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     // Log which model is being used
     console.log(`[REQUEST] Using NVIDIA model: ${nimModel}`);
     
-    // Make request to NVIDIA NIM API
-    const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
-      headers: {
-        'Authorization': `Bearer ${NIM_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      responseType: stream ? 'stream' : 'json',
-      timeout: 180000 // 3 minutes timeout for large models like GLM-5
-    });
+    // Make request to NVIDIA NIM API with retry logic for overloaded models
+    let response;
+    let lastError;
+    const maxRetries = 3;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[ATTEMPT ${attempt}/${maxRetries}] Calling NVIDIA API for ${nimModel}`);
+        
+        response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
+          headers: {
+            'Authorization': `Bearer ${NIM_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          responseType: stream ? 'stream' : 'json',
+          timeout: 180000 // 3 minutes timeout for large models like GLM-5
+        });
+        
+        // Success! Break out of retry loop
+        console.log(`[SUCCESS] Got response from ${nimModel}`);
+        break;
+        
+      } catch (error) {
+        lastError = error;
+        
+        // If it's a 404, the model truly doesn't exist - don't retry
+        if (error.response?.status === 404) {
+          console.error(`[404] Model ${nimModel} not found - not retrying`);
+          throw error;
+        }
+        
+        // If it's 429 (rate limit) or 503 (service unavailable), retry with backoff
+        if (error.response?.status === 429 || error.response?.status === 503 || error.code === 'ECONNABORTED') {
+          const waitTime = attempt * 2000; // 2s, 4s, 6s backoff
+          console.log(`[RETRY] ${nimModel} overloaded (${error.response?.status || error.code}), waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
+          
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            continue;
+          }
+        }
+        
+        // Other errors - throw immediately
+        throw error;
+      }
+    }
+    
+    // If we exhausted all retries, throw the last error
+    if (!response) {
+      throw lastError;
+    }
     
     if (stream) {
       // Handle streaming response with reasoning
