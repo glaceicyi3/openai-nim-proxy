@@ -96,7 +96,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     let processedMessages = messages;
     
     // Add natural writing instruction for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1' || nimModel.includes('glm4.7')) {
       // Check if there's already a system message
       const hasSystemMessage = messages.some(msg => msg.role === 'system');
       
@@ -175,10 +175,10 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     // Log which model is being used
     console.log(`[REQUEST] Using NVIDIA model: ${nimModel}`);
     
-    // Make request to NVIDIA NIM API with retry logic for overloaded models
+    // Make request to NVIDIA NIM API with aggressive retry logic
     let response;
     let lastError;
-    const maxRetries = 3;
+    const maxRetries = 5; // Increased retries
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -190,7 +190,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: 180000 // 3 minutes timeout for large models like GLM-5
+          timeout: 300000 // 5 minutes timeout (increased from 3)
         });
         
         // Success! Break out of retry loop
@@ -206,10 +206,10 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
           throw error;
         }
         
-        // If it's 429 (rate limit) or 503 (service unavailable), retry with backoff
-        if (error.response?.status === 429 || error.response?.status === 503 || error.code === 'ECONNABORTED') {
-          const waitTime = attempt * 2000; // 2s, 4s, 6s backoff
-          console.log(`[RETRY] ${nimModel} overloaded (${error.response?.status || error.code}), waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
+        // If it's overloaded/timeout, retry with exponential backoff
+        if (error.response?.status === 429 || error.response?.status === 503 || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+          const waitTime = Math.min(attempt * 5000, 30000); // 5s, 10s, 15s, 20s, 25s (max 30s)
+          console.log(`[RETRY ${attempt}/${maxRetries}] ${nimModel} unavailable (${error.response?.status || error.code}), waiting ${waitTime/1000}s before retry`);
           
           if (attempt < maxRetries) {
             await new Promise(resolve => setTimeout(resolve, waitTime));
@@ -218,12 +218,14 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         }
         
         // Other errors - throw immediately
+        console.error(`[ERROR] ${error.message}`);
         throw error;
       }
     }
     
     // If we exhausted all retries, throw the last error
     if (!response) {
+      console.error(`[FAILED] All ${maxRetries} attempts exhausted for ${nimModel}`);
       throw lastError;
     }
     
@@ -281,7 +283,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
                 }
                 
                 // For GLM-5, add extra line breaks after sentence-ending punctuation
-                if (nimModel === 'z-ai/glm5' && finalContent) {
+                if ((nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1') && finalContent) {
                   // Track sentence count in streaming
                   if (!res.locals) res.locals = {};
                   if (!res.locals.sentenceCount) res.locals.sentenceCount = 0;
@@ -338,9 +340,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
           }
           
-          // Advanced paragraph formatting for GLM-5
+          // Advanced paragraph formatting for GLM models
           let formattedContent = fullContent;
-          if (nimModel === 'z-ai/glm5') {
+          if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1') {
             // First, fix broken markdown formatting (spaces inside asterisks)
             formattedContent = formattedContent.replace(/\*\s+/g, '*').replace(/\s+\*/g, '*');
             
