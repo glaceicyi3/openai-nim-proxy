@@ -15,18 +15,38 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
+// Create HTTP agent with connection pooling and keepalive
+const http = require('http');
+const https = require('https');
+
+const httpAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 60000,
+  keepAliveMsecs: 30000
+});
+
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 60000,
+  keepAliveMsecs: 30000
+});
+
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
-const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
+const SHOW_REASONING = false; // Set to false to hide thinking (recommended for GLM-4.7)
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
 
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
-  'gpt-3.5-turbo': 'z-ai/glm-5.1',
-  'gpt-4': 'z-ai/glm4.7',
+  'gpt-3.5-turbo': 'meta/llama-3.1-8b-instruct',
+  'gpt-4': 'meta/llama-3.1-70b-instruct',
   'gpt-4-turbo': 'deepseek-ai/deepseek-v3.1',
-  'gpt-4o': 'z-ai/glm5',
+  'gpt-4o': 'z-ai/glm-5-1',
   'claude-3-opus': 'meta/llama-3.3-70b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
   'gemini-pro': 'deepseek-ai/deepseek-v3.1' 
@@ -96,7 +116,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     let processedMessages = messages;
     
     // Add natural writing instruction for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
       // Check if there's already a system message
       const hasSystemMessage = messages.some(msg => msg.role === 'system');
       
@@ -178,7 +198,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     // Make request to NVIDIA NIM API with aggressive retry logic
     let response;
     let lastError;
-    const maxRetries = 5; // Increased retries
+    const maxRetries = 7; // Increased from 5
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -190,11 +210,13 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: 300000 // 5 minutes timeout (increased from 3)
+          timeout: 120000, // 2 minutes (reduced from 5 to trigger faster retries)
+          httpAgent: httpAgent,
+          httpsAgent: httpsAgent
         });
         
         // Success! Break out of retry loop
-        console.log(`[SUCCESS] Got response from ${nimModel}`);
+        console.log(`[SUCCESS] Got response from ${nimModel} on attempt ${attempt}`);
         break;
         
       } catch (error) {
@@ -206,9 +228,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
           throw error;
         }
         
-        // If it's overloaded/timeout, retry with exponential backoff
-        if (error.response?.status === 429 || error.response?.status === 503 || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
-          const waitTime = Math.min(attempt * 5000, 30000); // 5s, 10s, 15s, 20s, 25s (max 30s)
+        // If it's overloaded/timeout/connection error, retry with exponential backoff
+        if (error.response?.status === 429 || error.response?.status === 503 || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET') {
+          const waitTime = Math.min(attempt * 3000, 20000); // 3s, 6s, 9s, 12s, 15s, 18s, 20s (faster backoff)
           console.log(`[RETRY ${attempt}/${maxRetries}] ${nimModel} unavailable (${error.response?.status || error.code}), waiting ${waitTime/1000}s before retry`);
           
           if (attempt < maxRetries) {
@@ -283,7 +305,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
                 }
                 
                 // For GLM-5, add extra line breaks after sentence-ending punctuation
-                if ((nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1') && finalContent) {
+                if (nimModel === 'z-ai/glm5' && finalContent) {
                   // Track sentence count in streaming
                   if (!res.locals) res.locals = {};
                   if (!res.locals.sentenceCount) res.locals.sentenceCount = 0;
@@ -340,9 +362,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
           }
           
-          // Advanced paragraph formatting for GLM models
+          // Advanced paragraph formatting for GLM-5
           let formattedContent = fullContent;
-          if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1') {
+          if (nimModel === 'z-ai/glm5') {
             // First, fix broken markdown formatting (spaces inside asterisks)
             formattedContent = formattedContent.replace(/\*\s+/g, '*').replace(/\s+\*/g, '*');
             
