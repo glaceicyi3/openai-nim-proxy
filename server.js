@@ -116,7 +116,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     let processedMessages = messages;
     
     // Add natural writing instruction for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm-5.1' || nimModel.includes('glm4.7')) {
       // Check if there's already a system message
       const hasSystemMessage = messages.some(msg => msg.role === 'system');
       
