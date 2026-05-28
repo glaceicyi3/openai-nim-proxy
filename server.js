@@ -198,7 +198,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     // Make request to NVIDIA NIM API with aggressive retry logic
     let response;
     let lastError;
-    const maxRetries = 7; // Increased from 5
+    const maxRetries = 7;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -210,17 +210,17 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: 120000, // 2 minutes (reduced from 5 to trigger faster retries)
+          timeout: 120000,
           httpAgent: httpAgent,
           httpsAgent: httpsAgent
         });
         
-        // Success! Break out of retry loop
         console.log(`[SUCCESS] Got response from ${nimModel} on attempt ${attempt}`);
         break;
         
       } catch (error) {
         lastError = error;
+        console.log(`[ATTEMPT ${attempt} FAILED] Error: ${error.code || error.response?.status} - ${error.message}`);
         
         // If it's a 404, the model truly doesn't exist - don't retry
         if (error.response?.status === 404) {
@@ -230,24 +230,25 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         
         // If it's overloaded/timeout/connection error, retry with exponential backoff
         if (error.response?.status === 429 || error.response?.status === 503 || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET') {
-          const waitTime = Math.min(attempt * 3000, 20000); // 3s, 6s, 9s, 12s, 15s, 18s, 20s (faster backoff)
+          const waitTime = Math.min(attempt * 3000, 20000);
           console.log(`[RETRY ${attempt}/${maxRetries}] ${nimModel} unavailable (${error.response?.status || error.code}), waiting ${waitTime/1000}s before retry`);
           
           if (attempt < maxRetries) {
             await new Promise(resolve => setTimeout(resolve, waitTime));
             continue;
+          } else {
+            console.error(`[FINAL ATTEMPT FAILED] All ${maxRetries} retries exhausted for ${nimModel}`);
           }
+        } else {
+          console.error(`[NON-RETRYABLE ERROR] ${error.code || error.message} - throwing immediately`);
+          throw error;
         }
-        
-        // Other errors - throw immediately
-        console.error(`[ERROR] ${error.message}`);
-        throw error;
       }
     }
     
     // If we exhausted all retries, throw the last error
     if (!response) {
-      console.error(`[FAILED] All ${maxRetries} attempts exhausted for ${nimModel}`);
+      console.error(`[FAILED] Throwing error after ${maxRetries} attempts: ${lastError.message}`);
       throw lastError;
     }
     
