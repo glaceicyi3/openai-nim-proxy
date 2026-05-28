@@ -46,7 +46,7 @@ const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'z-ai/glm-5.1',
   'gpt-4': 'meta/llama-3.1-70b-instruct',
   'gpt-4-turbo': 'deepseek-ai/deepseek-v3.1',
-  'gpt-4o': 'z-ai/glm5',
+  'gpt-4o': 'z-ai/glm-5-1',
   'claude-3-opus': 'meta/llama-3.3-70b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
   'gemini-pro': 'deepseek-ai/deepseek-v3.1' 
@@ -182,7 +182,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     };
     
     // Add thinking parameters for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1' || nimModel === 'z-ai/glm-5_1' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1' || nimModel.includes('glm4.7')) {
       nimRequest.chat_template_kwargs = {
         enable_thinking: true,
         clear_thinking: false
@@ -210,7 +210,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: 120000,
+          timeout: 180000, // 3 minutes
           httpAgent: httpAgent,
           httpsAgent: httpsAgent
         });
