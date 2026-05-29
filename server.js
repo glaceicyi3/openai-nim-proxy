@@ -198,7 +198,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     // Make request to NVIDIA NIM API with aggressive retry logic
     let response;
     let lastError;
-    const maxRetries = 7; // Increased from 5
+    const maxRetries = 1; // Only try once, no retries
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -210,7 +210,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: 120000, // 2 minutes (reduced from 5 to trigger faster retries)
+          timeout: timeout: 300000, // 5 minutes, single attempt
           httpAgent: httpAgent,
           httpsAgent: httpsAgent
         });
