@@ -15,28 +15,8 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
-// Create HTTP agent with connection pooling and keepalive
-const http = require('http');
-const https = require('https');
-
-const httpAgent = new http.Agent({
-  keepAlive: true,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-  timeout: 60000,
-  keepAliveMsecs: 30000
-});
-
-const httpsAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-  timeout: 60000,
-  keepAliveMsecs: 30000
-});
-
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
-const SHOW_REASONING = false; // Set to false to hide thinking (recommended for GLM-4.7)
+const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
@@ -44,9 +24,9 @@ const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwarg
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'z-ai/glm-5.1',
-  'gpt-4': 'meta/llama-3.1-70b-instruct',
+  'gpt-4': 'z-ai/glm4.7',
   'gpt-4-turbo': 'deepseek-ai/deepseek-v3.1',
-  'gpt-4o': 'z-ai/glm-5-1',
+  'gpt-4o': 'z-ai/glm5',
   'claude-3-opus': 'meta/llama-3.3-70b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
   'gemini-pro': 'deepseek-ai/deepseek-v3.1' 
@@ -116,7 +96,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     let processedMessages = messages;
     
     // Add natural writing instruction for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1' || nimModel.includes('glm4.7')) {
       // Check if there's already a system message
       const hasSystemMessage = messages.some(msg => msg.role === 'system');
       
@@ -195,10 +175,10 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     // Log which model is being used
     console.log(`[REQUEST] Using NVIDIA model: ${nimModel}`);
     
-    // Make request to NVIDIA NIM API with aggressive retry logic
+    // Make request to NVIDIA NIM API with single attempt
     let response;
     let lastError;
-    const maxRetries = 1; // Only try once, no retries
+    const maxRetries = 1;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -210,33 +190,21 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: timeout: 300000, // 5 minutes, single attempt
-          httpAgent: httpAgent,
-          httpsAgent: httpsAgent
+          timeout: 300000 // 5 minutes
         });
         
         // Success! Break out of retry loop
-        console.log(`[SUCCESS] Got response from ${nimModel} on attempt ${attempt}`);
+        console.log(`[SUCCESS] Got response from ${nimModel}`);
         break;
         
       } catch (error) {
         lastError = error;
+        console.log(`[ATTEMPT ${attempt} FAILED] Error: ${error.code || error.response?.status} - ${error.message}`);
         
         // If it's a 404, the model truly doesn't exist - don't retry
         if (error.response?.status === 404) {
           console.error(`[404] Model ${nimModel} not found - not retrying`);
           throw error;
-        }
-        
-        // If it's overloaded/timeout/connection error, retry with exponential backoff
-        if (error.response?.status === 429 || error.response?.status === 503 || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET') {
-          const waitTime = Math.min(attempt * 3000, 20000); // 3s, 6s, 9s, 12s, 15s, 18s, 20s (faster backoff)
-          console.log(`[RETRY ${attempt}/${maxRetries}] ${nimModel} unavailable (${error.response?.status || error.code}), waiting ${waitTime/1000}s before retry`);
-          
-          if (attempt < maxRetries) {
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-            continue;
-          }
         }
         
         // Other errors - throw immediately
@@ -245,9 +213,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       }
     }
     
-    // If we exhausted all retries, throw the last error
+    // If we failed, throw the error
     if (!response) {
-      console.error(`[FAILED] All ${maxRetries} attempts exhausted for ${nimModel}`);
+      console.error(`[FAILED] Could not get response for ${nimModel}`);
       throw lastError;
     }
     
@@ -305,7 +273,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
                 }
                 
                 // For GLM-5, add extra line breaks after sentence-ending punctuation
-                if (nimModel === 'z-ai/glm5' && finalContent) {
+                if ((nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1') && finalContent) {
                   // Track sentence count in streaming
                   if (!res.locals) res.locals = {};
                   if (!res.locals.sentenceCount) res.locals.sentenceCount = 0;
@@ -362,9 +330,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
           }
           
-          // Advanced paragraph formatting for GLM-5
+          // Advanced paragraph formatting for GLM models
           let formattedContent = fullContent;
-          if (nimModel === 'z-ai/glm5') {
+          if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1') {
             // First, fix broken markdown formatting (spaces inside asterisks)
             formattedContent = formattedContent.replace(/\*\s+/g, '*').replace(/\s+\*/g, '*');
             
