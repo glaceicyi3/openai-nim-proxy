@@ -189,7 +189,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: 180000 // 3 minutes timeout for large models like GLM-5
+          timeout: 300000 // 5 minutes timeout for large models like GLM-5.1
         });
         
         // Success! Break out of retry loop
