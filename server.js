@@ -161,7 +161,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     };
     
     // Add thinking parameters for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.1' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
       nimRequest.chat_template_kwargs = {
         enable_thinking: true,
         clear_thinking: false
