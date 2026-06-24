@@ -197,7 +197,11 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         break;
         
       } catch (error) {
-        lastError = error;
+    console.error('Proxy error:', error.message);
+    if (error.response) {
+      console.error('NVIDIA Response Status:', error.response.status);
+      console.error('NVIDIA Response Data:', JSON.stringify(error.response.data));
+    }
         
         // If it's a 404, the model truly doesn't exist - don't retry
         if (error.response?.status === 404) {
