@@ -200,7 +200,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     console.error('Proxy error:', error.message);
     if (error.response) {
       console.error('NVIDIA Response Status:', error.response.status);
-      console.error('NVIDIA Response Data:', JSON.stringify(error.response.data));
+      if (error.response.data) {
+        console.error('NVIDIA Response Data:', error.response.data.error?.message || error.response.data);
+      }
     }
         
         // If it's a 404, the model truly doesn't exist - don't retry
