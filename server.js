@@ -198,13 +198,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         
       } catch (error) {
     console.error('Proxy error:', error.message);
-    if (error.response) {
-      console.error('NVIDIA Response Status:', error.response.status);
-      if (error.response.data) {
-        console.error('NVIDIA Response Data:', error.response.data.error?.message || error.response.data);
-      }
-    }
-        
+
         // If it's a 404, the model truly doesn't exist - don't retry
         if (error.response?.status === 404) {
           console.error(`[404] Model ${nimModel} not found - not retrying`);
