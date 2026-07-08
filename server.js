@@ -156,7 +156,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       messages: processedMessages,
       temperature: temperature || 0.8,
       top_p: 0.95,
-      max_tokens: max_tokens || 3072,
+      max_tokens: max_tokens || 4096,
       stream: stream || false
     };
     
