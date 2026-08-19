@@ -154,14 +154,14 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     const nimRequest = {
       model: nimModel,
       messages: processedMessages,
-      temperature: temperature || 0.6,
+      temperature: temperature || 0.8,
       top_p: 0.95,
-      max_tokens: max_tokens || 3072,
+      max_tokens: max_tokens || 4096,
       stream: stream || false
     };
     
     // Add thinking parameters for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.2' || nimModel.includes('glm4.7')) {
       nimRequest.chat_template_kwargs = {
         enable_thinking: true,
         clear_thinking: false
