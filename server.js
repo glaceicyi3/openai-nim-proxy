@@ -95,7 +95,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     let processedMessages = messages;
     
     // Add natural writing instruction for GLM models
-    if (nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm-5.2' || nimModel.includes('glm4.7')) {
       // Check if there's already a system message
       const hasSystemMessage = messages.some(msg => msg.role === 'system');
       
@@ -161,7 +161,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     };
     
     // Add thinking parameters for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.2' || nimModel.includes('glm4.7')) {
       nimRequest.chat_template_kwargs = {
         enable_thinking: true,
         clear_thinking: false
