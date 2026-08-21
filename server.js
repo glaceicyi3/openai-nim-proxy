@@ -28,7 +28,7 @@ const MODEL_MAPPING = {
   'gpt-4-turbo': 'meta/llama-3.1-8b-instruct',
   'claude-3-opus': 'meta/llama-3.3-70b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
-  'gemini-pro': 'deepseek-ai/deepseek-v3.1' 
+  'gemini-pro': 'deepseek-ai/deepseek-v4-flash-0731' 
 };
 
 // Health check endpoint
@@ -95,7 +95,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     let processedMessages = messages;
     
     // Add natural writing instruction for GLM models
-    if (nimModel === 'z-ai/glm-5.2' || nimModel.includes('glm4.7')) {
+    if (nimModel === 'z-ai/glm-5.2' || nimModel.includes ('deepseek-ai/deepseek-v4-flash-0731') || nimModel.includes('glm4.7')) {
       // Check if there's already a system message
       const hasSystemMessage = messages.some(msg => msg.role === 'system');
       
