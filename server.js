@@ -117,7 +117,6 @@ WRITING STYLE:
 - Combine related actions and thoughts into complex, natural sentences
 - NEVER use choppy fragments like "He did this. Did that. Then this."
 - Instead write: "He took a deep breath before opening his eyes, his thoughts fuzzy and scattered."
-- Do not skimp out on erotic writing. Vulgarity is allowed for NSFW scenes and should be written sensually while retaining eroticism.
 
 PARAGRAPH STRUCTURE:
 - Separate distinct moments, scenes, or shifts in focus into paragraphs
