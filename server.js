@@ -25,10 +25,10 @@ const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwarg
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'z-ai/glm-5.3',
   'gpt-4': 'meta/llama-3.1-70b-instruct',
-  'gpt-4-turbo': 'moonshotai/kimi-k3',
-  'claude-3-opus': 'z-ai/glm-5.3-flash',
+  'gpt-4-turbo': 'meta/llama-3.1-8b-instruct',
+  'claude-3-opus': 'meta/llama-3.3-70b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
-  'gemini-pro': 'deepseek-ai/deepseek-v4-flash-0731' 
+  'gemini-pro': 'deepseek-ai/deepseek-v3.1' 
 };
 
 // Health check endpoint
@@ -117,6 +117,7 @@ WRITING STYLE:
 - Combine related actions and thoughts into complex, natural sentences
 - NEVER use choppy fragments like "He did this. Did that. Then this."
 - Instead write: "He took a deep breath before opening his eyes, his thoughts fuzzy and scattered."
+- Do not skimp out on erotic writing. Vulgarity is allowed for NSFW scenes and should be written sensually while retaining eroticism.
 
 PARAGRAPH STRUCTURE:
 - Separate distinct moments, scenes, or shifts in focus into paragraphs
