@@ -18,8 +18,11 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
 const SHOW_REASONING = false; // Set to false to hide thinking (recommended for GLM)
 
-// 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
-const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
+// 🔥 REASONING EFFORT - GLM-5.3 defaults to 'max' if unset, which can mean
+// a very long internal reasoning pass before any answer is emitted. Options
+// per NVIDIA's model card: 'low', 'high', 'max'. Use 'low' for snappy chat/
+// roleplay responses; bump to 'high' if answer quality suffers.
+const GLM_REASONING_EFFORT = 'low';
 
 // 🔥 DEBUG TOGGLE - Logs every raw SSE chunk received from NIM. Turn this on
 // temporarily if a stream dies partway through, to see exactly where/how it
@@ -54,7 +57,7 @@ app.get('/health', (req, res) => {
     status: 'ok',
     service: 'OpenAI to NVIDIA NIM Proxy',
     reasoning_display: SHOW_REASONING,
-    thinking_mode: ENABLE_THINKING_MODE,
+    glm_reasoning_effort: GLM_REASONING_EFFORT,
     debug_raw_chunks: DEBUG_RAW_CHUNKS
   });
 });
@@ -78,6 +81,7 @@ app.get('/v1/models', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
+    const requestStartTime = Date.now();
 
     // Smart model selection with fallback
     let nimModel = MODEL_MAPPING[model];
@@ -178,15 +182,22 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       stream: stream || false
     };
 
-    // Add thinking parameters for GLM models
+    // Add thinking parameters for GLM models.
+    // - reasoning_effort is a top-level request field (like OpenAI's
+    //   o-series models) - it defaults to 'max' if omitted, which is the
+    //   main cause of very long delays before any output appears.
+    // - clear_thinking lives inside chat_template_kwargs and defaults to
+    //   false; for multi-turn chat that means every turn's reasoning trace
+    //   stays in context and compounds, slowing each subsequent turn down.
+    //   Chat/roleplay use cases should set this true.
     if (isGLM(nimModel)) {
+      nimRequest.reasoning_effort = GLM_REASONING_EFFORT;
       nimRequest.chat_template_kwargs = {
-        enable_thinking: true,
-        clear_thinking: false
+        clear_thinking: true
       };
-      console.log(`[GLM] Request to ${nimModel} with thinking enabled`);
-    } else if (ENABLE_THINKING_MODE) {
-      nimRequest.extra_body = { chat_template_kwargs: { thinking: true } };
+      console.log(`[GLM] Request to ${nimModel} with reasoning_effort=${GLM_REASONING_EFFORT}, clear_thinking=true`);
+    } else {
+      // Non-GLM models: no reasoning params to add.
     }
 
     // Log which model is being used
@@ -299,9 +310,28 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
 
       armIdleTimer();
 
+      // Timing instrumentation: logs the gap since the previous chunk and
+      // the total elapsed time since the request started, so a single long
+      // pause vs. a continuous slow trickle can be told apart from the logs.
+      let lastChunkAt = requestStartTime;
+      let chunkCount = 0;
+      let firstByteLogged = false;
+
       response.data.on('data', (chunk) => {
         if (finished) return;
         armIdleTimer(); // saw data, push the deadline back out
+
+        const now = Date.now();
+        chunkCount++;
+        if (!firstByteLogged) {
+          console.log(`[TIMING] First byte from ${nimModel} after ${now - requestStartTime}ms`);
+          firstByteLogged = true;
+        }
+        const gap = now - lastChunkAt;
+        if (gap > 2000) {
+          console.log(`[TIMING] Chunk #${chunkCount} arrived after a ${gap}ms gap (total elapsed ${now - requestStartTime}ms)`);
+        }
+        lastChunkAt = now;
 
         if (DEBUG_RAW_CHUNKS) {
           console.log('[RAW CHUNK]', chunk.toString().slice(0, 300));
@@ -391,6 +421,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         if (finished) return;
         finished = true;
         clearIdleTimer();
+        console.log(`[TIMING] Stream from ${nimModel} finished after ${Date.now() - requestStartTime}ms total, ${chunkCount} chunks`);
         res.end();
       });
 
@@ -495,6 +526,6 @@ app.listen(PORT, () => {
   console.log(`OpenAI to NVIDIA NIM Proxy running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
-  console.log(`Thinking mode: ${ENABLE_THINKING_MODE ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`GLM reasoning effort: ${GLM_REASONING_EFFORT}`);
   console.log(`Stream idle timeout: ${STREAM_IDLE_TIMEOUT_MS}ms`);
 });
