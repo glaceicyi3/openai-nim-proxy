@@ -22,7 +22,7 @@ const SHOW_REASONING = false; // Set to false to hide thinking (recommended for 
 // a very long internal reasoning pass before any answer is emitted. Options
 // per NVIDIA's model card: 'low', 'high', 'max'. Use 'low' for snappy chat/
 // roleplay responses; bump to 'high' if answer quality suffers.
-const GLM_REASONING_EFFORT = 'low';
+const GLM_REASONING_EFFORT = 'high';
 
 // 🔥 DEBUG TOGGLE - Logs every raw SSE chunk received from NIM. Turn this on
 // temporarily if a stream dies partway through, to see exactly where/how it
