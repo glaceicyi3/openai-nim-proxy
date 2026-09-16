@@ -16,10 +16,20 @@ const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.c
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
-const SHOW_REASONING = false; // Set to false to hide thinking (recommended for GLM-4.7)
+const SHOW_REASONING = false; // Set to false to hide thinking (recommended for GLM)
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
+
+// 🔥 DEBUG TOGGLE - Logs every raw SSE chunk received from NIM. Turn this on
+// temporarily if a stream dies partway through, to see exactly where/how it
+// stops (silent socket death vs. a malformed/unexpected chunk).
+const DEBUG_RAW_CHUNKS = false;
+
+// 🔥 STREAM IDLE TIMEOUT (ms) - If no data arrives from NIM for this long
+// mid-stream, we abort cleanly instead of hanging forever. Long reasoning
+// traces can have real gaps, so keep this generous but finite.
+const STREAM_IDLE_TIMEOUT_MS = 90000; // 90s of silence = treat as dead
 
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
@@ -28,16 +38,24 @@ const MODEL_MAPPING = {
   'gpt-4-turbo': 'meta/llama-3.1-8b-instruct',
   'claude-3-opus': 'meta/llama-3.3-70b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
-  'gemini-pro': 'deepseek-ai/deepseek-v3.1' 
+  'gemini-pro': 'deepseek-ai/deepseek-v3.1'
 };
+
+// Match any GLM model by prefix instead of hardcoding exact version
+// strings everywhere. Update MODEL_MAPPING above when NVIDIA renames an
+// endpoint; this check then keeps working without further edits.
+function isGLM(nimModel) {
+  return typeof nimModel === 'string' && nimModel.toLowerCase().startsWith('z-ai/glm');
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM Proxy', 
+  res.json({
+    status: 'ok',
+    service: 'OpenAI to NVIDIA NIM Proxy',
     reasoning_display: SHOW_REASONING,
-    thinking_mode: ENABLE_THINKING_MODE
+    thinking_mode: ENABLE_THINKING_MODE,
+    debug_raw_chunks: DEBUG_RAW_CHUNKS
   });
 });
 
@@ -49,7 +67,7 @@ app.get('/v1/models', (req, res) => {
     created: Date.now(),
     owned_by: 'nvidia-nim-proxy'
   }));
-  
+
   res.json({
     object: 'list',
     data: models
@@ -60,7 +78,7 @@ app.get('/v1/models', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
-    
+
     // Smart model selection with fallback
     let nimModel = MODEL_MAPPING[model];
     if (!nimModel) {
@@ -78,7 +96,7 @@ app.post('/v1/chat/completions', async (req, res) => {
           }
         });
       } catch (e) {}
-      
+
       if (!nimModel) {
         const modelLower = model.toLowerCase();
         if (modelLower.includes('gpt-4') || modelLower.includes('claude-opus') || modelLower.includes('405b')) {
@@ -90,15 +108,15 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
       }
     }
-    
+
     // Transform OpenAI request to NIM format
     let processedMessages = messages;
-    
+
     // Add natural writing instruction for GLM models
-    if (nimModel === 'z-ai/glm-5.3' || nimModel.includes('glm4.7')) {
+    if (isGLM(nimModel)) {
       // Check if there's already a system message
       const hasSystemMessage = messages.some(msg => msg.role === 'system');
-      
+
       if (!hasSystemMessage) {
         processedMessages = [
           {
@@ -150,7 +168,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         ];
       }
     }
-    
+
     const nimRequest = {
       model: nimModel,
       messages: processedMessages,
@@ -159,9 +177,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       max_tokens: max_tokens || 4096,
       stream: stream || false
     };
-    
+
     // Add thinking parameters for GLM models
-    if (nimModel === 'z-ai/glm5' || nimModel === 'z-ai/glm-5.3' || nimModel.includes('glm4.7')) {
+    if (isGLM(nimModel)) {
       nimRequest.chat_template_kwargs = {
         enable_thinking: true,
         clear_thinking: false
@@ -170,141 +188,189 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
     } else if (ENABLE_THINKING_MODE) {
       nimRequest.extra_body = { chat_template_kwargs: { thinking: true } };
     }
-    
+
     // Log which model is being used
     console.log(`[REQUEST] Using NVIDIA model: ${nimModel}`);
-    
+
     // Make request to NVIDIA NIM API with retry logic for overloaded models
     let response;
     let lastError;
     const maxRetries = 3;
-    
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         console.log(`[ATTEMPT ${attempt}/${maxRetries}] Calling NVIDIA API for ${nimModel}`);
-        
+
         response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
           headers: {
             'Authorization': `Bearer ${NIM_API_KEY}`,
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: 300000 // 5 minutes timeout for large models like GLM-5.1
+          timeout: 300000 // 5 minutes timeout for large models like GLM-5.3
         });
-        
+
         // Success! Break out of retry loop
         console.log(`[SUCCESS] Got response from ${nimModel}`);
         break;
-        
+
       } catch (error) {
-    console.error('Proxy error:', error.message);
+        lastError = error;
+        console.error('Proxy error:', error.message);
 
         // If it's a 404, the model truly doesn't exist - don't retry
         if (error.response?.status === 404) {
           console.error(`[404] Model ${nimModel} not found - not retrying`);
           throw error;
         }
-        
+
         // If it's 429 (rate limit) or 503 (service unavailable), retry with backoff
         if (error.response?.status === 429 || error.response?.status === 503 || error.code === 'ECONNABORTED') {
           const waitTime = attempt * 2000; // 2s, 4s, 6s backoff
           console.log(`[RETRY] ${nimModel} overloaded (${error.response?.status || error.code}), waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
-          
+
           if (attempt < maxRetries) {
             await new Promise(resolve => setTimeout(resolve, waitTime));
             continue;
           }
         }
-        
+
         // Other errors - throw immediately
         throw error;
       }
     }
-    
+
     // If we exhausted all retries, throw the last error
     if (!response) {
       throw lastError;
     }
-    
+
     if (stream) {
       // Handle streaming response with reasoning
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      
+
       let buffer = '';
       let reasoningStarted = false;
-      
+
+      // Running state for GLM paragraph-break formatting, kept O(1) per
+      // chunk instead of re-scanning the whole accumulated response.
+      let glmSentenceCount = 0;
+      let glmTailBuffer = ''; // small rolling tail, not the full response
+
+      // --- Idle-timeout watchdog -------------------------------------
+      // If NIM goes silent mid-stream (common with long GLM reasoning
+      // traces on an overloaded endpoint), the underlying socket can
+      // die without ever firing 'error' or 'end'. Without this, the
+      // client just hangs forever. We reset the timer on every chunk
+      // and abort cleanly if it fires.
+      let idleTimer = null;
+      let finished = false;
+
+      const clearIdleTimer = () => {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+      };
+
+      const armIdleTimer = () => {
+        clearIdleTimer();
+        idleTimer = setTimeout(() => {
+          if (finished) return;
+          console.error(`[IDLE TIMEOUT] No data from ${nimModel} for ${STREAM_IDLE_TIMEOUT_MS}ms - aborting stream`);
+          finished = true;
+          try {
+            // Let the client know generation was cut off, then close.
+            res.write(`data: ${JSON.stringify({
+              error: { message: 'Upstream stream stalled and was aborted by proxy', code: 'idle_timeout' }
+            })}\n\n`);
+            res.write('data: [DONE]\n\n');
+          } catch (e) {
+            // response may already be closed
+          }
+          res.end();
+          if (response.data && typeof response.data.destroy === 'function') {
+            response.data.destroy();
+          }
+        }, STREAM_IDLE_TIMEOUT_MS);
+      };
+
+      armIdleTimer();
+
       response.data.on('data', (chunk) => {
+        if (finished) return;
+        armIdleTimer(); // saw data, push the deadline back out
+
+        if (DEBUG_RAW_CHUNKS) {
+          console.log('[RAW CHUNK]', chunk.toString().slice(0, 300));
+        }
+
         buffer += chunk.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
-        
+
         lines.forEach(line => {
           if (line.startsWith('data: ')) {
             if (line.includes('[DONE]')) {
-              res.write(line + '\n');
+              // SSE frames must end on a blank line to be recognized as
+              // closed by strict clients - use \n\n, not \n.
+              res.write('data: [DONE]\n\n');
               return;
             }
-            
+
             try {
               const data = JSON.parse(line.slice(6));
               if (data.choices?.[0]?.delta) {
                 const reasoning = data.choices[0].delta.reasoning_content;
                 const content = data.choices[0].delta.content;
-                
-                // For GLM-5 streaming, inject paragraph breaks
+
                 let finalContent = '';
-                
+
                 if (SHOW_REASONING) {
                   let combinedContent = '';
-                  
+
                   if (reasoning && !reasoningStarted) {
                     combinedContent = '<think>\n' + reasoning;
                     reasoningStarted = true;
                   } else if (reasoning) {
                     combinedContent = reasoning;
                   }
-                  
+
                   if (content && reasoningStarted) {
                     combinedContent += '</think>\n\n' + content;
                     reasoningStarted = false;
                   } else if (content) {
                     combinedContent += content;
                   }
-                  
+
                   finalContent = combinedContent;
                 } else {
                   finalContent = content || '';
                   // Don't include reasoning in output
                 }
-                
-                // For GLM-5, add extra line breaks after sentence-ending punctuation
-                if (nimModel === 'z-ai/glm5' && finalContent) {
-                  // Track sentence count in streaming
-                  if (!res.locals) res.locals = {};
-                  if (!res.locals.sentenceCount) res.locals.sentenceCount = 0;
-                  if (!res.locals.fullText) res.locals.fullText = '';
-                  
-                  // Accumulate the full text
-                  res.locals.fullText += finalContent;
-                  
-                  // Only check for paragraph breaks at proper sentence boundaries
-                  // Look for: period/question/exclamation followed by closing quote and space, or just followed by space and capital letter
-                  const properSentences = res.locals.fullText.match(/[.!?](?:\s*["']?\s+[A-Z]|$)/g) || [];
-                  const newSentenceCount = properSentences.length;
-                  
-                  // If we've crossed a 4-sentence threshold, add paragraph break
-                  if (newSentenceCount > res.locals.sentenceCount && newSentenceCount % 4 === 0) {
-                    // Only add break if this chunk ends with a proper sentence ending
-                    if (/[.!?]\s*["']?\s*$/.test(finalContent)) {
+
+                // For GLM models, add extra line breaks after sentence-ending
+                // punctuation. Fixed to only look at a small rolling tail
+                // instead of re-matching the entire accumulated response on
+                // every chunk (that was O(n^2) and would visibly slow the
+                // stream down the longer a response ran).
+                if (isGLM(nimModel) && finalContent) {
+                  glmTailBuffer = (glmTailBuffer + finalContent).slice(-200);
+
+                  const sentenceEnders = (finalContent.match(/[.!?](?:\s*["']?\s+[A-Z]|$)/g) || []).length;
+                  if (sentenceEnders > 0) {
+                    const before = glmSentenceCount;
+                    glmSentenceCount += sentenceEnders;
+
+                    const crossedFourBoundary = Math.floor(glmSentenceCount / 4) > Math.floor(before / 4);
+                    if (crossedFourBoundary && /[.!?]\s*["']?\s*$/.test(finalContent)) {
                       finalContent = finalContent + '\n\n';
                     }
                   }
-                  
-                  res.locals.sentenceCount = newSentenceCount;
                 }
-                
+
                 if (finalContent) {
                   data.choices[0].delta.content = finalContent;
                   delete data.choices[0].delta.reasoning_content;
@@ -312,17 +378,40 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
               }
               res.write(`data: ${JSON.stringify(data)}\n\n`);
             } catch (e) {
+              if (DEBUG_RAW_CHUNKS) {
+                console.error('[PARSE ERROR]', e.message, 'line:', line.slice(0, 300));
+              }
               res.write(line + '\n');
             }
           }
         });
       });
-      
-      response.data.on('end', () => res.end());
-      response.data.on('error', (err) => {
-        console.error('Stream error:', err);
+
+      response.data.on('end', () => {
+        if (finished) return;
+        finished = true;
+        clearIdleTimer();
         res.end();
       });
+
+      response.data.on('error', (err) => {
+        console.error('Stream error:', err);
+        if (finished) return;
+        finished = true;
+        clearIdleTimer();
+        res.end();
+      });
+
+      // If the client disconnects, stop the upstream request too.
+      req.on('close', () => {
+        if (finished) return;
+        finished = true;
+        clearIdleTimer();
+        if (response.data && typeof response.data.destroy === 'function') {
+          response.data.destroy();
+        }
+      });
+
     } else {
       // Transform NIM response to OpenAI format with reasoning
       const openaiResponse = {
@@ -332,21 +421,21 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         model: model,
         choices: response.data.choices.map(choice => {
           let fullContent = choice.message?.content || '';
-          
+
           if (SHOW_REASONING && choice.message?.reasoning_content) {
             fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
           }
-          
-          // Advanced paragraph formatting for GLM-5
+
+          // Paragraph formatting for GLM models
           let formattedContent = fullContent;
-          if (nimModel === 'z-ai/glm5') {
+          if (isGLM(nimModel)) {
             // First, fix broken markdown formatting (spaces inside asterisks)
             formattedContent = formattedContent.replace(/\*\s+/g, '*').replace(/\s+\*/g, '*');
-            
+
             // Split text into sentences (improved regex for dialogue and complex punctuation)
             const sentences = formattedContent.match(/[^.!?]+[.!?]+["']?(?=\s+[A-Z]|$)/g) || [formattedContent];
-            
-            // Group sentences into paragraphs of 4-6 sentences
+
+            // Group sentences into paragraphs of ~5 sentences
             const paragraphs = [];
             for (let i = 0; i < sentences.length; i += 5) {
               const paragraph = sentences.slice(i, i + 5).join(' ').trim();
@@ -354,11 +443,11 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
                 paragraphs.push(paragraph);
               }
             }
-            
+
             // Join with double newlines and clean up excessive spacing
             formattedContent = paragraphs.join('\n\n').replace(/\n{3,}/g, '\n\n');
           }
-          
+
           return {
             index: choice.index,
             message: {
@@ -374,13 +463,13 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
           total_tokens: 0
         }
       };
-      
+
       res.json(openaiResponse);
     }
-    
+
   } catch (error) {
     console.error('Proxy error:', error.message);
-    
+
     res.status(error.response?.status || 500).json({
       error: {
         message: error.message || 'Internal server error',
@@ -407,4 +496,5 @@ app.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
   console.log(`Thinking mode: ${ENABLE_THINKING_MODE ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`Stream idle timeout: ${STREAM_IDLE_TIMEOUT_MS}ms`);
 });
