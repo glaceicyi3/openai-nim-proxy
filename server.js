@@ -22,12 +22,17 @@ const SHOW_REASONING = false; // Set to false to hide thinking (recommended for 
 // a very long internal reasoning pass before any answer is emitted. Options
 // per NVIDIA's model card: 'low', 'high', 'max'. Use 'low' for snappy chat/
 // roleplay responses; bump to 'high' if answer quality suffers.
-const GLM_REASONING_EFFORT = 'max';
+const GLM_REASONING_EFFORT = 'high';
 
 // 🔥 DEBUG TOGGLE - Logs every raw SSE chunk received from NIM. Turn this on
 // temporarily if a stream dies partway through, to see exactly where/how it
 // stops (silent socket death vs. a malformed/unexpected chunk).
 const DEBUG_RAW_CHUNKS = false;
+
+// 🔥 STREAM IDLE TIMEOUT (ms) - If no data arrives from NIM for this long
+// mid-stream, we abort cleanly instead of hanging forever. Long reasoning
+// traces can have real gaps, so keep this generous but finite.
+const STREAM_IDLE_TIMEOUT_MS = 90000; // 90s of silence = treat as dead
 
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
