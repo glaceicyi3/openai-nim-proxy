@@ -22,33 +22,30 @@ const SHOW_REASONING = false; // Set to false to hide thinking (recommended for 
 // a very long internal reasoning pass before any answer is emitted. Options
 // per NVIDIA's model card: 'low', 'high', 'max'. Use 'low' for snappy chat/
 // roleplay responses; bump to 'high' if answer quality suffers.
-const GLM_REASONING_EFFORT = 'max';
+const GLM_REASONING_EFFORT = 'low';
 
 // 🔥 DEBUG TOGGLE - Logs every raw SSE chunk received from NIM. Turn this on
 // temporarily if a stream dies partway through, to see exactly where/how it
 // stops (silent socket death vs. a malformed/unexpected chunk).
 const DEBUG_RAW_CHUNKS = false;
 
-// 🔥 STREAM IDLE TIMEOUT (ms) - If no data arrives from NIM for this long
-// mid-stream, we abort cleanly instead of hanging forever. Long reasoning
-// traces can have real gaps, so keep this generous but finite.
-const STREAM_IDLE_TIMEOUT_MS = 90000; // 90s of silence = treat as dead
-
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'z-ai/glm-5.3',
   'gpt-4': 'meta/llama-3.1-70b-instruct',
   'gpt-4-turbo': 'moonshotai/kimi-k3',
-  'claude-3-opus': 'z-ai/glm-5.3-flash',
+  'claude-3-opus': 'meta/llama-3.3-70b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
   'gemini-pro': 'deepseek-ai/deepseek-v3.1'
 };
 
-// Match any GLM model by prefix instead of hardcoding exact version
-// strings everywhere. Update MODEL_MAPPING above when NVIDIA renames an
-// endpoint; this check then keeps working without further edits.
+// Match GLM models by prefix, plus any other reasoning models that should
+// get the same treatment (thinking params, roleplay system prompt,
+// paragraph formatting). Add further exact model IDs to the array as needed.
+const REASONING_MODEL_EXTRAS = ['moonshotai/kimi-k3'];
 function isGLM(nimModel) {
-  return typeof nimModel === 'string' && nimModel.toLowerCase().startsWith('z-ai/glm');
+  if (typeof nimModel !== 'string') return false;
+  return nimModel.toLowerCase().startsWith('z-ai/glm') || REASONING_MODEL_EXTRAS.includes(nimModel);
 }
 
 // Health check endpoint
@@ -178,7 +175,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       messages: processedMessages,
       temperature: temperature || 0.8,
       top_p: 0.95,
-      max_tokens: max_tokens || 5120,
+      max_tokens: max_tokens || 4096,
       stream: stream || false
     };
 
@@ -265,50 +262,13 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       let buffer = '';
       let reasoningStarted = false;
 
-      // Running state for GLM paragraph-break formatting, kept O(1) per
-      // chunk instead of re-scanning the whole accumulated response.
+      // Running state for GLM/reasoning-model paragraph-break formatting,
+      // kept O(1) per chunk instead of re-scanning the whole accumulated
+      // response.
       let glmSentenceCount = 0;
       let glmTailBuffer = ''; // small rolling tail, not the full response
 
-      // --- Idle-timeout watchdog -------------------------------------
-      // If NIM goes silent mid-stream (common with long GLM reasoning
-      // traces on an overloaded endpoint), the underlying socket can
-      // die without ever firing 'error' or 'end'. Without this, the
-      // client just hangs forever. We reset the timer on every chunk
-      // and abort cleanly if it fires.
-      let idleTimer = null;
       let finished = false;
-
-      const clearIdleTimer = () => {
-        if (idleTimer) {
-          clearTimeout(idleTimer);
-          idleTimer = null;
-        }
-      };
-
-      const armIdleTimer = () => {
-        clearIdleTimer();
-        idleTimer = setTimeout(() => {
-          if (finished) return;
-          console.error(`[IDLE TIMEOUT] No data from ${nimModel} for ${STREAM_IDLE_TIMEOUT_MS}ms - aborting stream`);
-          finished = true;
-          try {
-            // Let the client know generation was cut off, then close.
-            res.write(`data: ${JSON.stringify({
-              error: { message: 'Upstream stream stalled and was aborted by proxy', code: 'idle_timeout' }
-            })}\n\n`);
-            res.write('data: [DONE]\n\n');
-          } catch (e) {
-            // response may already be closed
-          }
-          res.end();
-          if (response.data && typeof response.data.destroy === 'function') {
-            response.data.destroy();
-          }
-        }, STREAM_IDLE_TIMEOUT_MS);
-      };
-
-      armIdleTimer();
 
       // Timing instrumentation: logs the gap since the previous chunk and
       // the total elapsed time since the request started, so a single long
@@ -319,7 +279,6 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
 
       response.data.on('data', (chunk) => {
         if (finished) return;
-        armIdleTimer(); // saw data, push the deadline back out
 
         const now = Date.now();
         chunkCount++;
@@ -420,7 +379,6 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       response.data.on('end', () => {
         if (finished) return;
         finished = true;
-        clearIdleTimer();
         console.log(`[TIMING] Stream from ${nimModel} finished after ${Date.now() - requestStartTime}ms total, ${chunkCount} chunks`);
         res.end();
       });
@@ -429,7 +387,6 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         console.error('Stream error:', err);
         if (finished) return;
         finished = true;
-        clearIdleTimer();
         res.end();
       });
 
@@ -437,7 +394,6 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       req.on('close', () => {
         if (finished) return;
         finished = true;
-        clearIdleTimer();
         if (response.data && typeof response.data.destroy === 'function') {
           response.data.destroy();
         }
@@ -527,5 +483,4 @@ app.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
   console.log(`GLM reasoning effort: ${GLM_REASONING_EFFORT}`);
-  console.log(`Stream idle timeout: ${STREAM_IDLE_TIMEOUT_MS}ms`);
 });
