@@ -2,9 +2,26 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const http = require('http');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Reuse TCP connections instead of opening a new one per request - reduces
+// the odds of a mid-stream connection reset against an endpoint under load.
+const httpAgent = new http.Agent({ keepAlive: true });
+const httpsAgent = new https.Agent({ keepAlive: true });
+
+// Catch anything that slips past local try/catch so a single bad request
+// can't crash the whole process and take down every subsequent request
+// (which would show up to the client as "no response from bot").
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[UNHANDLED REJECTION]', err);
+});
 
 // Middleware
 app.use(cors());
@@ -24,6 +41,12 @@ const SHOW_REASONING = false; // Set to false to hide thinking (recommended for 
 // roleplay responses; bump to 'high' if answer quality suffers.
 const GLM_REASONING_EFFORT = 'max';
 
+// 🔥 DEFAULT MAX TOKENS - reasoning tokens and the final answer draw from
+// the same budget. 4096 is easy to exhaust on a reasoning model before the
+// actual reply is written, which is what "cut off due to token limit" is.
+// Raise this well above what a normal reply needs so reasoning has room.
+const DEFAULT_MAX_TOKENS = 16000;
+
 // 🔥 DEBUG TOGGLE - Logs every raw SSE chunk received from NIM. Turn this on
 // temporarily if a stream dies partway through, to see exactly where/how it
 // stops (silent socket death vs. a malformed/unexpected chunk).
@@ -33,16 +56,16 @@ const DEBUG_RAW_CHUNKS = false;
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'z-ai/glm-5.3',
   'gpt-4': 'meta/llama-3.1-70b-instruct',
-  'gpt-4-turbo': 'moonshotai/kimi-k3',
-  'claude-3-opus': 'z-ai/glm-5.3-flash',
+  'gpt-4-turbo': 'meta/llama-3.1-8b-instruct',
+  'claude-3-opus': 'meta/llama-3.3-70b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
   'gemini-pro': 'deepseek-ai/deepseek-v3.1'
 };
 
 // Match GLM models by prefix, plus any other reasoning models that should
 // get the same treatment (thinking params, roleplay system prompt,
-// paragraph formatting). Add further exact model IDs to the array as needed.
-const REASONING_MODEL_EXTRAS = ['moonshotai/kimi-k3'];
+// paragraph formatting). Add exact model IDs here if you map another one in.
+const REASONING_MODEL_EXTRAS = [];
 function isGLM(nimModel) {
   if (typeof nimModel !== 'string') return false;
   return nimModel.toLowerCase().startsWith('z-ai/glm') || REASONING_MODEL_EXTRAS.includes(nimModel);
@@ -90,7 +113,9 @@ app.post('/v1/chat/completions', async (req, res) => {
           max_tokens: 1
         }, {
           headers: { 'Authorization': `Bearer ${NIM_API_KEY}`, 'Content-Type': 'application/json' },
-          validateStatus: (status) => status < 500
+          validateStatus: (status) => status < 500,
+          httpAgent,
+          httpsAgent
         }).then(res => {
           if (res.status >= 200 && res.status < 300) {
             nimModel = model;
@@ -175,7 +200,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       messages: processedMessages,
       temperature: temperature || 0.8,
       top_p: 0.95,
-      max_tokens: max_tokens || 4096,
+      max_tokens: max_tokens || DEFAULT_MAX_TOKENS,
       stream: stream || false
     };
 
@@ -215,7 +240,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             'Content-Type': 'application/json'
           },
           responseType: stream ? 'stream' : 'json',
-          timeout: 300000 // 5 minutes timeout for large models like GLM-5.3
+          timeout: 300000, // 5 minutes timeout for large models like GLM-5.3
+          httpAgent,
+          httpsAgent
         });
 
         // Success! Break out of retry loop
@@ -259,143 +286,198 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
-      let buffer = '';
-      let reasoningStarted = false;
-
-      // Running state for GLM/reasoning-model paragraph-break formatting,
-      // kept O(1) per chunk instead of re-scanning the whole accumulated
-      // response.
-      let glmSentenceCount = 0;
-      let glmTailBuffer = ''; // small rolling tail, not the full response
-
       let finished = false;
+      let currentStreamData = response.data;
 
-      // Timing instrumentation: logs the gap since the previous chunk and
-      // the total elapsed time since the request started, so a single long
-      // pause vs. a continuous slow trickle can be told apart from the logs.
-      let lastChunkAt = requestStartTime;
-      let chunkCount = 0;
-      let firstByteLogged = false;
+      // If a stream dies before ANY content has reached the client, it's
+      // safe to silently retry from scratch (nothing partial to reconcile).
+      // If it dies after content was already sent, we can't retry cleanly -
+      // we tell the client plainly instead of just dropping the connection,
+      // which is what was producing "connection dropped, press to continue"
+      // and "no response from bot" with no explanation.
+      const MAX_STREAM_RETRIES = 2;
 
-      response.data.on('data', (chunk) => {
+      const respondWithErrorAndClose = (message) => {
         if (finished) return;
-
-        const now = Date.now();
-        chunkCount++;
-        if (!firstByteLogged) {
-          console.log(`[TIMING] First byte from ${nimModel} after ${now - requestStartTime}ms`);
-          firstByteLogged = true;
+        finished = true;
+        try {
+          res.write(`data: ${JSON.stringify({ error: { message, code: 'proxy_stream_error' } })}\n\n`);
+          res.write('data: [DONE]\n\n');
+        } catch (e) {
+          // response may already be closed
         }
-        const gap = now - lastChunkAt;
-        if (gap > 2000) {
-          console.log(`[TIMING] Chunk #${chunkCount} arrived after a ${gap}ms gap (total elapsed ${now - requestStartTime}ms)`);
-        }
-        lastChunkAt = now;
+        res.end();
+      };
 
-        if (DEBUG_RAW_CHUNKS) {
-          console.log('[RAW CHUNK]', chunk.toString().slice(0, 300));
-        }
+      function beginStreamAttempt(streamData, attemptNum) {
+        currentStreamData = streamData;
 
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        let buffer = '';
+        let reasoningStarted = false;
 
-        lines.forEach(line => {
-          if (line.startsWith('data: ')) {
-            if (line.includes('[DONE]')) {
-              // SSE frames must end on a blank line to be recognized as
-              // closed by strict clients - use \n\n, not \n.
-              res.write('data: [DONE]\n\n');
-              return;
-            }
+        // Running state for GLM/reasoning-model paragraph-break formatting,
+        // kept O(1) per chunk instead of re-scanning the whole accumulated
+        // response.
+        let glmSentenceCount = 0;
+        let glmTailBuffer = ''; // small rolling tail, not the full response
 
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.choices?.[0]?.delta) {
-                const reasoning = data.choices[0].delta.reasoning_content;
-                const content = data.choices[0].delta.content;
+        // Timing instrumentation: logs the gap since the previous chunk and
+        // the total elapsed time since the request started, so a single
+        // long pause vs. a continuous slow trickle can be told apart in
+        // the logs.
+        let lastChunkAt = Date.now();
+        let chunkCount = 0;
+        let firstByteLogged = false;
+        let attemptDone = false;
 
-                let finalContent = '';
+        streamData.on('data', (chunk) => {
+          if (finished) return;
 
-                if (SHOW_REASONING) {
-                  let combinedContent = '';
+          const now = Date.now();
+          chunkCount++;
+          if (!firstByteLogged) {
+            console.log(`[TIMING] First byte from ${nimModel} after ${now - requestStartTime}ms (attempt ${attemptNum})`);
+            firstByteLogged = true;
+          }
+          const gap = now - lastChunkAt;
+          if (gap > 2000) {
+            console.log(`[TIMING] Chunk #${chunkCount} arrived after a ${gap}ms gap (total elapsed ${now - requestStartTime}ms)`);
+          }
+          lastChunkAt = now;
 
-                  if (reasoning && !reasoningStarted) {
-                    combinedContent = '<think>\n' + reasoning;
-                    reasoningStarted = true;
-                  } else if (reasoning) {
-                    combinedContent = reasoning;
+          if (DEBUG_RAW_CHUNKS) {
+            console.log('[RAW CHUNK]', chunk.toString().slice(0, 300));
+          }
+
+          buffer += chunk.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          lines.forEach(line => {
+            if (line.startsWith('data: ')) {
+              if (line.includes('[DONE]')) {
+                // SSE frames must end on a blank line to be recognized as
+                // closed by strict clients - use \n\n, not \n.
+                res.write('data: [DONE]\n\n');
+                return;
+              }
+
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.choices?.[0]?.delta) {
+                  const reasoning = data.choices[0].delta.reasoning_content;
+                  const content = data.choices[0].delta.content;
+
+                  let finalContent = '';
+
+                  if (SHOW_REASONING) {
+                    let combinedContent = '';
+
+                    if (reasoning && !reasoningStarted) {
+                      combinedContent = '<think>\n' + reasoning;
+                      reasoningStarted = true;
+                    } else if (reasoning) {
+                      combinedContent = reasoning;
+                    }
+
+                    if (content && reasoningStarted) {
+                      combinedContent += '</think>\n\n' + content;
+                      reasoningStarted = false;
+                    } else if (content) {
+                      combinedContent += content;
+                    }
+
+                    finalContent = combinedContent;
+                  } else {
+                    finalContent = content || '';
+                    // Don't include reasoning in output
                   }
 
-                  if (content && reasoningStarted) {
-                    combinedContent += '</think>\n\n' + content;
-                    reasoningStarted = false;
-                  } else if (content) {
-                    combinedContent += content;
-                  }
+                  // For GLM models, add extra line breaks after sentence-ending
+                  // punctuation. Only looks at a small rolling tail instead of
+                  // re-matching the entire accumulated response on every chunk
+                  // (that was O(n^2) and would visibly slow the stream down
+                  // the longer a response ran).
+                  if (isGLM(nimModel) && finalContent) {
+                    glmTailBuffer = (glmTailBuffer + finalContent).slice(-200);
 
-                  finalContent = combinedContent;
-                } else {
-                  finalContent = content || '';
-                  // Don't include reasoning in output
-                }
+                    const sentenceEnders = (finalContent.match(/[.!?](?:\s*["']?\s+[A-Z]|$)/g) || []).length;
+                    if (sentenceEnders > 0) {
+                      const before = glmSentenceCount;
+                      glmSentenceCount += sentenceEnders;
 
-                // For GLM models, add extra line breaks after sentence-ending
-                // punctuation. Fixed to only look at a small rolling tail
-                // instead of re-matching the entire accumulated response on
-                // every chunk (that was O(n^2) and would visibly slow the
-                // stream down the longer a response ran).
-                if (isGLM(nimModel) && finalContent) {
-                  glmTailBuffer = (glmTailBuffer + finalContent).slice(-200);
-
-                  const sentenceEnders = (finalContent.match(/[.!?](?:\s*["']?\s+[A-Z]|$)/g) || []).length;
-                  if (sentenceEnders > 0) {
-                    const before = glmSentenceCount;
-                    glmSentenceCount += sentenceEnders;
-
-                    const crossedFourBoundary = Math.floor(glmSentenceCount / 4) > Math.floor(before / 4);
-                    if (crossedFourBoundary && /[.!?]\s*["']?\s*$/.test(finalContent)) {
-                      finalContent = finalContent + '\n\n';
+                      const crossedFourBoundary = Math.floor(glmSentenceCount / 4) > Math.floor(before / 4);
+                      if (crossedFourBoundary && /[.!?]\s*["']?\s*$/.test(finalContent)) {
+                        finalContent = finalContent + '\n\n';
+                      }
                     }
                   }
-                }
 
-                if (finalContent) {
-                  data.choices[0].delta.content = finalContent;
-                  delete data.choices[0].delta.reasoning_content;
+                  if (finalContent) {
+                    data.choices[0].delta.content = finalContent;
+                    delete data.choices[0].delta.reasoning_content;
+                  }
                 }
+                res.write(`data: ${JSON.stringify(data)}\n\n`);
+              } catch (e) {
+                if (DEBUG_RAW_CHUNKS) {
+                  console.error('[PARSE ERROR]', e.message, 'line:', line.slice(0, 300));
+                }
+                res.write(line + '\n');
               }
-              res.write(`data: ${JSON.stringify(data)}\n\n`);
-            } catch (e) {
-              if (DEBUG_RAW_CHUNKS) {
-                console.error('[PARSE ERROR]', e.message, 'line:', line.slice(0, 300));
-              }
-              res.write(line + '\n');
             }
+          });
+        });
+
+        streamData.on('end', () => {
+          if (attemptDone || finished) return;
+          attemptDone = true;
+          finished = true;
+          console.log(`[TIMING] Stream from ${nimModel} finished after ${Date.now() - requestStartTime}ms total, ${chunkCount} chunks (attempt ${attemptNum})`);
+          res.end();
+        });
+
+        streamData.on('error', (err) => {
+          if (attemptDone || finished) return;
+          attemptDone = true;
+          console.error(`[STREAM ERROR] attempt ${attemptNum} for ${nimModel}:`, err.code || err.message);
+
+          if (chunkCount === 0 && attemptNum < MAX_STREAM_RETRIES) {
+            console.log(`[RETRY STREAM] 0 bytes delivered on attempt ${attemptNum} - retrying (${attemptNum + 1}/${MAX_STREAM_RETRIES})`);
+            axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
+              headers: {
+                'Authorization': `Bearer ${NIM_API_KEY}`,
+                'Content-Type': 'application/json'
+              },
+              responseType: 'stream',
+              timeout: 300000,
+              httpAgent,
+              httpsAgent
+            }).then(retryResponse => {
+              beginStreamAttempt(retryResponse.data, attemptNum + 1);
+            }).catch(retryErr => {
+              console.error('[RETRY STREAM] retry request failed:', retryErr.message);
+              respondWithErrorAndClose('Upstream connection failed after retry.');
+            });
+          } else {
+            respondWithErrorAndClose(
+              chunkCount === 0
+                ? 'Upstream connection failed with no response.'
+                : 'Upstream connection dropped mid-response.'
+            );
           }
         });
-      });
+      }
 
-      response.data.on('end', () => {
-        if (finished) return;
-        finished = true;
-        console.log(`[TIMING] Stream from ${nimModel} finished after ${Date.now() - requestStartTime}ms total, ${chunkCount} chunks`);
-        res.end();
-      });
+      beginStreamAttempt(response.data, 1);
 
-      response.data.on('error', (err) => {
-        console.error('Stream error:', err);
-        if (finished) return;
-        finished = true;
-        res.end();
-      });
-
-      // If the client disconnects, stop the upstream request too.
+      // If the client disconnects, stop whichever upstream request is
+      // currently active.
       req.on('close', () => {
         if (finished) return;
         finished = true;
-        if (response.data && typeof response.data.destroy === 'function') {
-          response.data.destroy();
+        if (currentStreamData && typeof currentStreamData.destroy === 'function') {
+          currentStreamData.destroy();
         }
       });
 
