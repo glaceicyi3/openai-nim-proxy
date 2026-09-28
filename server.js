@@ -71,6 +71,88 @@ function isGLM(nimModel) {
   return nimModel.toLowerCase().startsWith('z-ai/glm') || REASONING_MODEL_EXTRAS.includes(nimModel);
 }
 
+// Markdown spans (*italics* and `inline code`) don't survive line breaks in
+// most renderers, so a span that runs across a paragraph break only styles
+// the first line. This fixer tracks whether a span is open (state persists
+// across streamed chunks) and, when a newline arrives inside one, closes the
+// span before the newline and reopens it on the next line of text.
+// Result: "*A. B.\n\nC.*" becomes "*A. B.*\n\n*C.*"
+function createMarkdownFixer() {
+  let inItalic = false;
+  let inCode = false;      // inline `code`
+  let inFence = false;     // ``` fenced block - never touched
+  let pendingReopen = null; // marker to re-emit before the next real text
+  let italicLen = 0;       // safety valve for unbalanced asterisks
+  const MAX_ITALIC_LEN = 3000;
+
+  return function fix(text) {
+    let out = '';
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+
+      if (pendingReopen) {
+        if (ch === '\n' || ch === '\r') { out += ch; continue; }
+        if (ch === ' ' || ch === '\t') { continue; } // drop leading indent
+        if (ch === pendingReopen) {
+          // Model reopened the span itself; we already closed it above.
+          pendingReopen = null;
+          out += ch;
+          continue;
+        }
+        out += pendingReopen;
+        pendingReopen = null;
+        // fall through and handle this character normally
+      }
+
+      if (ch === '\n') {
+        if (!inFence && inCode) {
+          out += '`';
+          pendingReopen = '`';
+        } else if (!inFence && inItalic) {
+          out += '*';
+          pendingReopen = '*';
+        }
+        out += ch;
+        continue;
+      }
+
+      if (ch === '*' && !inCode && !inFence) {
+        // Toggling on every asterisk also handles **bold** correctly:
+        // it toggles twice on open and twice on close, net zero.
+        inItalic = !inItalic;
+        italicLen = 0;
+        out += ch;
+        continue;
+      }
+
+      if (ch === '`') {
+        let j = i;
+        while (j < text.length && text[j] === '`') j++;
+        const run = j - i;
+        out += text.slice(i, j);
+        if (run >= 3) {
+          inFence = !inFence;
+          inCode = false;
+        } else if (!inFence) {
+          inCode = !inCode;
+        }
+        i = j - 1;
+        continue;
+      }
+
+      if (inItalic && ++italicLen > MAX_ITALIC_LEN) {
+        // Almost certainly a stray unbalanced asterisk - stop "fixing".
+        inItalic = false;
+        pendingReopen = null;
+        italicLen = 0;
+      }
+      out += ch;
+    }
+    return out;
+  };
+}
+// END createMarkdownFixer
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({
@@ -321,6 +403,10 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
         let glmSentenceCount = 0;
         let glmTailBuffer = ''; // small rolling tail, not the full response
 
+        // Per-attempt markdown state so italics/backticks stay balanced
+        // across streamed chunks and paragraph breaks.
+        const mdFix = createMarkdownFixer();
+
         // Timing instrumentation: logs the gap since the previous chunk and
         // the total elapsed time since the request started, so a single
         // long pause vs. a continuous slow trickle can be told apart in
@@ -414,6 +500,7 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
                   }
 
                   if (finalContent) {
+                    finalContent = mdFix(finalContent);
                     data.choices[0].delta.content = finalContent;
                     delete data.choices[0].delta.reasoning_content;
                   }
@@ -516,6 +603,9 @@ Write as if you are crafting a published novel - polished, immersive, and engagi
             // Join with double newlines and clean up excessive spacing
             formattedContent = paragraphs.join('\n\n').replace(/\n{3,}/g, '\n\n');
           }
+
+          // Keep italics/backtick spans intact across line breaks
+          formattedContent = createMarkdownFixer()(formattedContent);
 
           return {
             index: choice.index,
