@@ -59,7 +59,7 @@ const MODEL_MAPPING = {
   'gpt-4-turbo': 'meta/llama-3.1-8b-instruct',
   'claude-3-opus': 'z-ai/glm-5.3-flash',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
-  'gemini-pro': 'moonshotai/kimi-k3'
+  'gemini-pro': 'mistralai/mistral-large-4-1t-a52b'
 };
 
 // Match GLM models by prefix, plus any other reasoning models that should
